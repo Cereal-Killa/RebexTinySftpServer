@@ -14,401 +14,476 @@ using Rebex.Security.Certificates;
 
 namespace Rebex.TinySftpServer
 {
-	public partial class MainForm : Form
-	{
-		public const LogLevel DefaultLogLevel = LogLevel.Info;
+    public partial class MainForm : Form
+    {
+        public const LogLevel DefaultLogLevel = LogLevel.Info;
 
-		public bool IsStarted;
-		public FileServer Server = new FileServer();
-		public Config Config = new Config();
-		public SshPublicKey[] UserPublicKeys;
-		public RichTextBoxLogWriter Log;
+        public bool IsStarted;
+        public FileServer Server = new FileServer();
+        public Config Config = new Config();
+        public SshPublicKey[] UserPublicKeys;
+        public RichTextBoxLogWriter Log;
+        public NotifyIcon TrayIcon;
 
-		public MainForm()
-		{
-			InitializeComponent();
-			InitUI();
-			SetupServer();
-		}
+        public MainForm()
+        {
+            InitializeComponent();
+            InitUI();
+            SetupServer();
+        }
 
-		private void InitUI()
-		{
-			// set icon and logo
-			var assembly = GetType().Assembly;
-			string resourcePrefix = "Rebex.TinySftpServer.Resources.";
-			Icon = new Icon(assembly.GetManifestResourceStream(resourcePrefix + "TinySftpServer.ico"));
-			pictureBox2.Image = Image.FromStream(assembly.GetManifestResourceStream(resourcePrefix + "RebexLogo.png"));
+        private void InitUI()
+        {
+            // set icon and logo
+            this.CenterToScreen();
+            var assembly = GetType().Assembly;
+            string resourcePrefix = "Rebex.TinySftpServer.Resources.";
+            Icon = new Icon(assembly.GetManifestResourceStream(resourcePrefix + "TinySftpServer.ico"));
+            pictureBox2.Image = Image.FromStream(assembly.GetManifestResourceStream(resourcePrefix + "RebexLogo.png"));
 
-			// log writer
-			Server.LogWriter = Log = new RichTextBoxLogWriter(LogRichTextBox, 10 * 1024, DefaultLogLevel);
+            // log writer
+            Server.LogWriter = Log = new RichTextBoxLogWriter(LogRichTextBox, 10 * 1024, DefaultLogLevel);
 
-			// ensure that configuration is readable
-			Config.Verify();
+            // ensure that configuration is readable
+            Config.Verify();
 
-			// text for About box
-			var sb = new StringBuilder();
+            // add additional components to the form
+            AddTrayIcon();
 
-			sb.Append(@"{\rtf\ansi");
-			sb.Append(@"\b " + Config.ProductVersion + @" \b0 \line ");
-			sb.Append(@"Free minimalist SFTP server with no setup and modern cipher support. \line ");
-			sb.Append(@"\line ");
-			sb.Append(@"Server IP: \line");
+            // text for About box
+            var sb = new StringBuilder();
 
-			foreach (var IpAddress in Config.GetAllLocalIPAddresses())
-			{
-				if(IpAddress.AddressFamily == AddressFamily.InterNetwork)
-					sb.Append(@"\tab\tab " + IpAddress + @" \line ");
-			}
+            sb.Append(@"{\rtf\ansi");
+            sb.Append(@"\b " + Config.ProductVersion + @" \b0 \line ");
+            sb.Append(@"Free minimalist SFTP server with no setup and modern cipher support. \line ");
+            sb.Append(@"\line ");
+            sb.Append(@"Server IP: \line");
 
-			sb.Append(@"\line ");
-			sb.Append(@"Server port: \tab " + Config.ServerPort + @" \line ");
+            foreach (var IpAddress in Config.GetAllLocalIPAddresses())
+            {
+                if (IpAddress.AddressFamily == AddressFamily.InterNetwork)
+                    sb.Append(@"\tab\tab " + IpAddress + @" \line ");
+            }
 
-			if (Config.ShowUserDetails)
-			{
-				sb.Append(@"\line ");
-				sb.Append(@"User:          \tab " + RtfEscapeString(Config.UserName) + @"\line ");
-				sb.Append(@"Password:      \tab " + RtfEscapeString(Config.UserPassword) + @"\line ");
+            sb.Append(@"\line ");
+            sb.Append(@"Server port: \tab " + Config.ServerPort + @" \line ");
 
-				if (string.IsNullOrEmpty(Config.UserPublicKeyDir))
-					sb.Append(@"User public keys:   \tab \i (disabled) \i0 \line ");
-				else
-					sb.Append(@"User public keys:   \tab " + RtfEscapeString(Config.UserPublicKeyDir) + @"\line ");
+            if (Config.ShowUserDetails)
+            {
+                sb.Append(@"\line ");
+                sb.Append(@"User:          \tab " + RtfEscapeString(Config.UserName) + @"\line ");
+                sb.Append(@"Password:      \tab " + RtfEscapeString(Config.UserPassword) + @"\line ");
 
-				sb.Append(@"User root directory: \tab " + RtfEscapeString(Config.UserRootDir) + @"\line ");
-			}
+                if (string.IsNullOrEmpty(Config.UserPublicKeyDir))
+                    sb.Append(@"User public keys:   \tab \i (disabled) \i0 \line ");
+                else
+                    sb.Append(@"User public keys:   \tab " + RtfEscapeString(Config.UserPublicKeyDir) + @"\line ");
 
-			sb.Append(@"Configuration file: \tab " + RtfEscapeString(Config.ConfigurationFilePath) + @"\line ");
-			sb.Append(@"}");
+                sb.Append(@"User root directory: \tab " + RtfEscapeString(Config.UserRootDir) + @"\line ");
+            }
 
-			AboutBox.Rtf = sb.ToString();
+            sb.Append(@"Configuration file: \tab " + RtfEscapeString(Config.ConfigurationFilePath) + @"\line ");
+            sb.Append(@"}");
 
-			// setup log level list
-			var logLevels = Enum.GetValues(typeof(LogLevel));
-			LogLevelCombo.DataSource = logLevels;
-			LogLevelCombo.SelectedItem = DefaultLogLevel;
-		}
+            AboutBox.Rtf = sb.ToString();
 
-		public List<SshPublicKey> GetUserPublicKeys(string userPublicKeyDir)
-		{
-			Log.Write("");
+            // setup log level list
+            var logLevels = Enum.GetValues(typeof(LogLevel));
+            LogLevelCombo.DataSource = logLevels;
+            LogLevelCombo.SelectedItem = DefaultLogLevel;
+        }
 
-			var list = new List<SshPublicKey>();
-			string[] files;
-			try
-			{
-				files = Directory.GetFiles(userPublicKeyDir);
-			}
-			catch (Exception)
-			{
-				Log.Write(LogColor.Important, "Unable to access user public key directory '{0}'.", userPublicKeyDir);
-				return list;
-			}
+        private void AddTrayIcon()
+        {
+            if (!Config.MinimizeTray && !Config.closeTray)
+                return;
 
-			for (int i = 0; i < files.Length; i++)
-			{
-				string file = files[i];
-				try
-				{
-					SshPublicKey key;
-					switch (Path.GetExtension(file).ToLowerInvariant())
-					{
-						case ".pub":
-						case ".key":
-							key = new SshPublicKey(file);
-							Log.Write("User public key '{0}' loaded.\r\nFingerprint: {1}", file, key.Fingerprint.ToString(SignatureHashAlgorithm.MD5));
-							list.Add(key);
-							break;
+            // system tray menu
+            var TrayMenu = new ContextMenu();
+            var MenuOpen = TrayMenu.MenuItems.Add("&Open");
+            var MenuExit = TrayMenu.MenuItems.Add("&Exit");
 
-						case ".der":
-						case ".cer":
-						case ".crt":
-							var certificate = Certificate.LoadDer(file);
-							key = new SshPublicKey(certificate);
-							Log.Write("User public key '{0}' loaded.\r\nFingerprint: {1}", file, key.Fingerprint.ToString(SignatureHashAlgorithm.MD5));
-							list.Add(key);
-							break;
+            // system tray icon
+            TrayIcon = new NotifyIcon()
+            {
+                Icon = Icon,
+                Text = this.Text,
+                ContextMenu = TrayMenu
+            };
 
-						case "":
-							if (Path.GetFileName(file) != "authorized_keys")
-								goto default;
+            // hook the events
+            this.Resize += MainForm_Resize;
+            MenuExit.Click += MenuExit_Click;
+            MenuOpen.Click += TrayIcon_DoubleClick;
+            this.FormClosing += MainForm_FormClosing;
+            TrayIcon.DoubleClick += TrayIcon_DoubleClick;
+        }
 
-							var keys = SshPublicKey.LoadPublicKeys(file);
-							if (keys.Length > 0)
-							{
-								Log.Write("User public keys '{0}' loaded.", file);
-								foreach (var item in keys)
-								{
-									Log.Write("Fingerprint: {0}", item.Fingerprint.ToString(SignatureHashAlgorithm.MD5));
-								}
-								list.AddRange(keys);
-							}
-							break;
+        private void MenuExit_Click(object sender, EventArgs e)
+        {
+            if (MessageBox.Show("Do you really want to quit the server?", "Quit Server",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                return;
 
-						default:
-							Log.Write(LogColor.Important, "User public key '{0}' file extension is unknown.", file);
-							Log.Write(LogColor.Info, "Supported extensions for SSH public keys: '*.pub', '*.key'.");
-							Log.Write(LogColor.Info, "Supported extensions for X509 certificates: '*.der', '*.cer', '*.crt'.");
-							Log.Write(LogColor.Info, "Supported file name for ~/.ssh/authorized_keys file format: 'authorized_keys'.");
-							continue;
+            if (IsStarted)
+                StopServer();
 
-					}
-				}
-				catch (Exception x)
-				{
-					Log.Write(LogColor.Important, "User public key '{0}' could not be loaded: {1}", file, x.Message);
-				}
-			}
+            Application.Exit();
+        }
 
-			return list;
-		}
+        private void MainForm_Resize(object sender, EventArgs e)
+        {
+            if (!Config.MinimizeTray)
+                return;
 
-		private void TryAddPrivateKey(string keyPath, string keyPassword, bool useRsa)
-		{
-			// Temporary hotfix for WinXP which is (sometimes?) unable to generate DSA keys
-			try
-			{
-				SshPrivateKey key = LoadOrCreatePrivateKey(keyPath, keyPassword, useRsa);
-				Server.Keys.Add(key);
-			}
-			catch (CryptographicException ex)
-			{
-				Log.Write(ex);
-			}
-		}
+            if (this.WindowState == FormWindowState.Minimized)
+            {
+                this.Hide();
+                TrayIcon.Visible = true;
+            }
+        }
 
-		public void SetupServer()
-		{
-			try
-			{
-				// 1. Server keys
+        private void TrayIcon_DoubleClick(object sender, EventArgs e)
+        {
+            this.Show();
+            TrayIcon.Visible = false;
+            this.WindowState = FormWindowState.Normal;
+        }
 
-				// add private keys for server authentication
-				TryAddPrivateKey(Config.RsaPrivateKeyFile, Config.RsaPrivateKeyPassword, useRsa: true);
-				TryAddPrivateKey(Config.DssPrivateKeyFile, Config.DssPrivateKeyPassword, useRsa: false);
+        private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            if (!Config.closeTray)
+                return;
 
-				// 2. Users
+            if (e.CloseReason == CloseReason.UserClosing)
+            {
+                this.Hide();
+                e.Cancel = true;
+                TrayIcon.Visible = true;
+            }
+        }
 
-				// make sure that root path does exists
-				if (!Directory.Exists(Config.UserRootDir))
-				{
-					var dir = Config.UserRootDir;
-					Log.Write(LogColor.Important, "User data root directory '{0}' does not exist.", dir);
-					Log.Write("Creating data root directory...");
-					Directory.CreateDirectory(dir);
+        public List<SshPublicKey> GetUserPublicKeys(string userPublicKeyDir)
+        {
+            Log.Write("");
 
-					// create test files
-					Log.Write("Creating user test data...");
-					var testFileDataPath = Path.Combine(dir, "testfile.txt");
-					File.WriteAllText(
-						testFileDataPath,
-						"This is a test file created by Rebex Tiny SFTP server." +
-						Environment.NewLine + Environment.NewLine +
-						"https://www.rebex.net/tiny-sftp-server/"
-					);
-					Log.Write("Done.");
-				}
+            var list = new List<SshPublicKey>();
+            string[] files;
+            try
+            {
+                files = Directory.GetFiles(userPublicKeyDir);
+            }
+            catch (Exception)
+            {
+                Log.Write(LogColor.Important, "Unable to access user public key directory '{0}'.", userPublicKeyDir);
+                return list;
+            }
 
-				// add user
-				var user = new FileServerUser(
-					Config.UserName,
-					Config.UserPassword,
-					Config.UserRootDir);
-				Server.Users.Add(user);
+            for (int i = 0; i < files.Length; i++)
+            {
+                string file = files[i];
+                try
+                {
+                    SshPublicKey key;
+                    switch (Path.GetExtension(file).ToLowerInvariant())
+                    {
+                        case ".pub":
+                        case ".key":
+                            key = new SshPublicKey(file);
+                            Log.Write("User public key '{0}' loaded.\r\nFingerprint: {1}", file, key.Fingerprint.ToString(SignatureHashAlgorithm.MD5));
+                            list.Add(key);
+                            break;
 
-				// 3. Check user key directory
+                        case ".der":
+                        case ".cer":
+                        case ".crt":
+                            var certificate = Certificate.LoadDer(file);
+                            key = new SshPublicKey(certificate);
+                            Log.Write("User public key '{0}' loaded.\r\nFingerprint: {1}", file, key.Fingerprint.ToString(SignatureHashAlgorithm.MD5));
+                            list.Add(key);
+                            break;
 
-				if (!string.IsNullOrEmpty(Config.UserPublicKeyDir))
-				{
-					if (!Directory.Exists(Config.UserPublicKeyDir))
-					{
-						Log.Write(LogColor.Important, "User public key directory '{0}' does not exist.", Config.UserPublicKeyDir);
-					}
-				}
+                        case "":
+                            if (Path.GetFileName(file) != "authorized_keys")
+                                goto default;
 
-				// 4. Register custom authentication handler
+                            var keys = SshPublicKey.LoadPublicKeys(file);
+                            if (keys.Length > 0)
+                            {
+                                Log.Write("User public keys '{0}' loaded.", file);
+                                foreach (var item in keys)
+                                {
+                                    Log.Write("Fingerprint: {0}", item.Fingerprint.ToString(SignatureHashAlgorithm.MD5));
+                                }
+                                list.AddRange(keys);
+                            }
+                            break;
 
-				Server.Authentication += Server_Authentication;
+                        default:
+                            Log.Write(LogColor.Important, "User public key '{0}' file extension is unknown.", file);
+                            Log.Write(LogColor.Info, "Supported extensions for SSH public keys: '*.pub', '*.key'.");
+                            Log.Write(LogColor.Info, "Supported extensions for X509 certificates: '*.der', '*.cer', '*.crt'.");
+                            Log.Write(LogColor.Info, "Supported file name for ~/.ssh/authorized_keys file format: 'authorized_keys'.");
+                            continue;
 
-				// 5. Ready to start
+                    }
+                }
+                catch (Exception x)
+                {
+                    Log.Write(LogColor.Important, "User public key '{0}' could not be loaded: {1}", file, x.Message);
+                }
+            }
 
-				if (Config.AutoStart)
-				{
-					StartServer();
-				}
-				else
-				{
-					Log.Write("");
-					Log.Write(@"   Press ""Start"" button to begin.");
-					Log.Write("");
-				}
-			}
-			catch (Exception ex)
-			{
-				Log.Write(ex);
-			}
+            return list;
+        }
 
-			UpdateUI();
-		}
+        private void TryAddPrivateKey(string keyPath, string keyPassword, bool useRsa)
+        {
+            // Temporary hotfix for WinXP which is (sometimes?) unable to generate DSA keys
+            try
+            {
+                SshPrivateKey key = LoadOrCreatePrivateKey(keyPath, keyPassword, useRsa);
+                Server.Keys.Add(key);
+            }
+            catch (CryptographicException ex)
+            {
+                Log.Write(ex);
+            }
+        }
 
-		private void Server_Authentication(object sender, AuthenticationEventArgs e)
-		{
-			if (e.UserName != Config.UserName)
-			{
-				e.Reject();
-				return;
-			}
+        public void SetupServer()
+        {
+            try
+            {
+                // 1. Server keys
 
-			if (e.Key != null)
-			{
-				// test that the actual key is one of the expected keys
-				var keys = UserPublicKeys;
-				if (keys != null && keys.Contains(e.Key))
-					e.Accept(Server.Users[Config.UserName]);
-				else
-					e.Reject();
-			}
-			else
-			{
-				if (e.Password == Config.UserPassword)
-					e.Accept(Server.Users[Config.UserName]);
-				else
-					e.Reject();
-			}
-		}
+                // add private keys for server authentication
+                TryAddPrivateKey(Config.RsaPrivateKeyFile, Config.RsaPrivateKeyPassword, useRsa: true);
+                TryAddPrivateKey(Config.DssPrivateKeyFile, Config.DssPrivateKeyPassword, useRsa: false);
 
-		private void StartStopButton_Click(object sender, EventArgs e)
-		{
-			try
-			{
-				if (IsStarted)
-				{
-					StopServer();
-				}
-				else
-				{
-					StartServer();
-				}
-			}
-			catch (Exception ex)
-			{
-				Log.Write(ex);
-			}
+                // 2. Users
 
-			UpdateUI();
-		}
+                // make sure that root path does exists
+                if (!Directory.Exists(Config.UserRootDir))
+                {
+                    var dir = Config.UserRootDir;
+                    Log.Write(LogColor.Important, "User data root directory '{0}' does not exist.", dir);
+                    Log.Write("Creating data root directory...");
+                    Directory.CreateDirectory(dir);
 
-		private void Configure()
-		{
-			UserPublicKeys = null;
-			Server.Settings.AllowedAuthenticationMethods = AuthenticationMethods.Password;
-			Server.Settings.KeepAlivePeriod = 180; // 3 minutes
-			if (!string.IsNullOrEmpty(Config.UserPublicKeyDir))
-			{
-				// iterate through all public keys and load them
-				var userPublicKeys = GetUserPublicKeys(Config.UserPublicKeyDir);
-				if (userPublicKeys.Count == 0)
-				{
-					Log.Write(LogColor.Important, "No user public keys found in '{0}'.", Config.UserPublicKeyDir);
-					Log.Write(LogColor.Important, "Public key authentication disabled.");
-				}
-				else
-				{
-					Log.Write(LogColor.Success, "Public key authentication enabled.");
-					UserPublicKeys = userPublicKeys.ToArray();
-					Server.Settings.AllowedAuthenticationMethods |= AuthenticationMethods.PublicKey;
-				}
-				Log.Write("");
-			}
-		}
+                    // create test files
+                    Log.Write("Creating user test data...");
+                    var testFileDataPath = Path.Combine(dir, "testfile.txt");
+                    File.WriteAllText(
+                        testFileDataPath,
+                        "This is a test file created by Rebex Tiny SFTP server." +
+                        Environment.NewLine + Environment.NewLine +
+                        "https://www.rebex.net/tiny-sftp-server/"
+                    );
+                    Log.Write("Done.");
+                }
 
-		private void StartServer()
-		{
-			Configure();
+                // add user
+                var user = new FileServerUser(
+                    Config.UserName,
+                    Config.UserPassword,
+                    Config.UserRootDir);
+                Server.Users.Add(user);
 
-			Log.Write("Binding SFTP server to port {0}...", Config.ServerPort);
-			try
-			{
-				Server.Bind(Config.ServerPort, FileServerProtocol.Sftp);
-			}
-			catch (InvalidOperationException x)
-			{
-				Log.Write(LogColor.Error, "Unable to bind to port {0}: ", x.Message);
-				Log.Write(LogColor.Important, "Unable to bind to port {0}. Try changing it in the configuration file.", Config.ServerPort);
-				return;
-			}
+                // 3. Check user key directory
 
-			Log.Write("Starting...");
-			Server.Start();
+                if (!string.IsNullOrEmpty(Config.UserPublicKeyDir))
+                {
+                    if (!Directory.Exists(Config.UserPublicKeyDir))
+                    {
+                        Log.Write(LogColor.Important, "User public key directory '{0}' does not exist.", Config.UserPublicKeyDir);
+                    }
+                }
 
-			Log.Write(LogColor.Success, "SFTP server has started and is ready to accept connections.");
-			IsStarted = true;
-		}
+                // 4. Register custom authentication handler
 
-		private void StopServer()
-		{
-			Log.Write("Stopping...");
-			Server.Stop();
-			Server.Unbind();
+                Server.Authentication += Server_Authentication;
 
-			Log.Write("Stopped.");
-			IsStarted = false;
-		}
+                // 5. Ready to start
 
-		private void UpdateUI()
-		{
-			if (IsStarted)
-			{
-				StartStopButton.Text = "&Stop";
-			}
-			else
-			{
-				StartStopButton.Text = "&Start";
-			}
-		}
+                if (Config.AutoStart)
+                {
+                    StartServer();
+                }
+                else
+                {
+                    Log.Write("");
+                    Log.Write(@"   Press ""Start"" button to begin.");
+                    Log.Write("");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Write(ex);
+            }
 
-		private SshPrivateKey LoadOrCreatePrivateKey(string filename, string password, bool useRsa)
-		{
-			if (!File.Exists(filename))
-			{
-				Log.Write(LogColor.Important, "Private key file '{0}' not found.", filename);
-				Log.Write("Generating a new private key...");
-				SshPrivateKey key;
-				if (useRsa)
-				{
-					// generate a 2048-bit RSA key
-					key = SshPrivateKey.Generate(SshHostKeyAlgorithm.RSA, 2048);
-				}
-				else
-				{
-					// generate a 1024-bit DSS key
-					key = SshPrivateKey.Generate(SshHostKeyAlgorithm.DSS, 1024);
-				}
+            UpdateUI();
+        }
 
-				Log.Write("Saving the {1} key to '{0}'...", Path.GetFullPath(filename), useRsa ? "RSA" : "DSS");
-				key.Save(filename, password, SshPrivateKeyFormat.Putty);
+        private void Server_Authentication(object sender, AuthenticationEventArgs e)
+        {
+            if (e.UserName != Config.UserName)
+            {
+                e.Reject();
+                return;
+            }
 
-				return key;
-			}
+            if (e.Key != null)
+            {
+                // test that the actual key is one of the expected keys
+                var keys = UserPublicKeys;
+                if (keys != null && keys.Contains(e.Key))
+                    e.Accept(Server.Users[Config.UserName]);
+                else
+                    e.Reject();
+            }
+            else
+            {
+                if (e.Password == Config.UserPassword)
+                    e.Accept(Server.Users[Config.UserName]);
+                else
+                    e.Reject();
+            }
+        }
 
-			return new SshPrivateKey(filename, password);
-		}
+        private void StartStopButton_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (IsStarted)
+                {
+                    StopServer();
+                }
+                else
+                {
+                    StartServer();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Write(ex);
+            }
 
-		private void LogLevelCombo_SelectionChangeCommitted(object sender, EventArgs e)
-		{
-			var level = (LogLevel)LogLevelCombo.SelectedValue;
-			Log.Level = level;
-			Log.Write("Log level changed to {0}.", level);
-		}
+            UpdateUI();
+        }
 
-		private void LinkToHomepage_Click(object sender, EventArgs e)
-		{
-			Process.Start(Config.HomepageUrl);
-		}
+        private void Configure()
+        {
+            UserPublicKeys = null;
+            Server.Settings.AllowedAuthenticationMethods = AuthenticationMethods.Password;
+            Server.Settings.KeepAlivePeriod = 180; // 3 minutes
+            if (!string.IsNullOrEmpty(Config.UserPublicKeyDir))
+            {
+                // iterate through all public keys and load them
+                var userPublicKeys = GetUserPublicKeys(Config.UserPublicKeyDir);
+                if (userPublicKeys.Count == 0)
+                {
+                    Log.Write(LogColor.Important, "No user public keys found in '{0}'.", Config.UserPublicKeyDir);
+                    Log.Write(LogColor.Important, "Public key authentication disabled.");
+                }
+                else
+                {
+                    Log.Write(LogColor.Success, "Public key authentication enabled.");
+                    UserPublicKeys = userPublicKeys.ToArray();
+                    Server.Settings.AllowedAuthenticationMethods |= AuthenticationMethods.PublicKey;
+                }
+                Log.Write("");
+            }
+        }
 
-		private static string RtfEscapeString(string value)
-		{
-			return value.Replace(@"\", @"\\");
-		}
+        private void StartServer()
+        {
+            Configure();
+
+            Log.Write("Binding SFTP server to port {0}...", Config.ServerPort);
+            try
+            {
+                Server.Bind(Config.ServerPort, FileServerProtocol.Sftp);
+            }
+            catch (InvalidOperationException x)
+            {
+                Log.Write(LogColor.Error, "Unable to bind to port {0}: ", x.Message);
+                Log.Write(LogColor.Important, "Unable to bind to port {0}. Try changing it in the configuration file.", Config.ServerPort);
+                return;
+            }
+
+            Log.Write("Starting...");
+            Server.Start();
+
+            Log.Write(LogColor.Success, "SFTP server has started and is ready to accept connections.");
+            IsStarted = true;
+        }
+
+        private void StopServer()
+        {
+            Log.Write("Stopping...");
+            Server.Stop();
+            Server.Unbind();
+
+            Log.Write("Stopped.");
+            IsStarted = false;
+        }
+
+        private void UpdateUI()
+        {
+            if (IsStarted)
+            {
+                StartStopButton.Text = "&Stop";
+            }
+            else
+            {
+                StartStopButton.Text = "&Start";
+            }
+        }
+
+        private SshPrivateKey LoadOrCreatePrivateKey(string filename, string password, bool useRsa)
+        {
+            if (!File.Exists(filename))
+            {
+                Log.Write(LogColor.Important, "Private key file '{0}' not found.", filename);
+                Log.Write("Generating a new private key...");
+                SshPrivateKey key;
+                if (useRsa)
+                {
+                    // generate a 2048-bit RSA key
+                    key = SshPrivateKey.Generate(SshHostKeyAlgorithm.RSA, 2048);
+                }
+                else
+                {
+                    // generate a 1024-bit DSS key
+                    key = SshPrivateKey.Generate(SshHostKeyAlgorithm.DSS, 1024);
+                }
+
+                Log.Write("Saving the {1} key to '{0}'...", Path.GetFullPath(filename), useRsa ? "RSA" : "DSS");
+                key.Save(filename, password, SshPrivateKeyFormat.Putty);
+
+                return key;
+            }
+
+            return new SshPrivateKey(filename, password);
+        }
+
+        private void LogLevelCombo_SelectionChangeCommitted(object sender, EventArgs e)
+        {
+            var level = (LogLevel)LogLevelCombo.SelectedValue;
+            Log.Level = level;
+            Log.Write("Log level changed to {0}.", level);
+        }
+
+        private void LinkToHomepage_Click(object sender, EventArgs e)
+        {
+            Process.Start(Config.HomepageUrl);
+        }
+
+        private static string RtfEscapeString(string value)
+        {
+            return value.Replace(@"\", @"\\");
+        }
 
         private void label4_Click(object sender, EventArgs e)
         {

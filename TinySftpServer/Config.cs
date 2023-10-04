@@ -138,6 +138,30 @@ namespace Rebex.TinySftpServer
 			}
 		}
 
+		/// <summary>
+		/// True if server should be minimized to the system tray when the window is closed by the user.
+		/// </summary>
+		public bool closeTray
+		{
+			get
+			{
+				var value = GetValue("closeTray", "false");
+				return Boolean.Parse(value);
+			}
+		}
+
+		/// <summary>
+		/// True if server should be minimized to the system tray instead of the taskbar.
+		/// </summary>
+		public bool MinimizeTray
+		{
+			get
+			{
+				var value = GetValue("minimizeTray", "false");
+				return Boolean.Parse(value);
+			}
+		}
+
 		public bool ShowUserDetails
 		{
 			get
